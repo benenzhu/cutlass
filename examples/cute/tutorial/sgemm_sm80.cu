@@ -31,6 +31,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cassert>
+#include <iostream>
 
 #include <thrust/host_vector.h>
 #include <thrust/device_vector.h>
@@ -183,7 +184,7 @@ gemm_device(ProblemShape shape_MNK, CtaTiler cta_tiler,
   Tensor tXsB = s2r_thr_copy_b.partition_S(sB);                        // (CPY,MMA_N,MMA_K,PIPE)
   Tensor tXrB = s2r_thr_copy_b.retile_D(tCrB);                         // (CPY,MMA_N,MMA_K)
 
-#if 0
+#if 1
   if(thread0()) {
     print("  mA : "); print(  mA); print("\n");
     print("  gA : "); print(  gA); print("\n");
@@ -193,7 +194,7 @@ gemm_device(ProblemShape shape_MNK, CtaTiler cta_tiler,
   }
 #endif
 
-#if 0
+#if 1
   if(thread0()) {
     print("  mB : "); print(  mB); print("\n");
     print("  gB : "); print(  gB); print("\n");
@@ -203,7 +204,7 @@ gemm_device(ProblemShape shape_MNK, CtaTiler cta_tiler,
   }
 #endif
 
-#if 0
+#if 1
   if(thread0()) {
     print("  mC : "); print(  mC); print("\n");
     print("  gC : "); print(  gC); print("\n");
@@ -387,13 +388,13 @@ gemm_tn(int m, int n, int k,
   //Copy_Atom<SM75_U32x2_LDSM_N, half_t> s2r_atom_B;
   Copy_Atom<SM75_U32x4_LDSM_N, half_t> s2r_atom_B;
 
-#if 0
+#if 1
   print(copyA);
   print(copyB);
   print(mmaC);
 #endif
 
-#if 0
+#if 1
   print_latex(copyA);
   print_latex(copyB);
   print_latex(mmaC);
@@ -477,13 +478,13 @@ gemm_nt(int m, int n, int k,
   TiledMMA mmaC = make_tiled_mma(UniversalFMA<TC,TA,TB>{},
                                  Layout<Shape<_16,_16,_1>>{});  // 16x16x1 TiledMMA
 
-#if 0
+#if 1
   print(copyA);
   print(copyB);
   print(mmaC);
 #endif
 
-#if 0
+#if 1
   print_latex(copyA);
   print_latex(copyB);
   print_latex(mmaC);
@@ -554,13 +555,13 @@ gemm_tn(int m, int n, int k,
   TiledMMA mmaC = make_tiled_mma(UniversalFMA<TC,TA,TB>{},
                                  Layout<Shape<_16,_16,_1>>{});  // 16x16x1 TiledMMA
 
-#if 0
+#if 1
   print(copyA);
   print(copyB);
   print(mmaC);
 #endif
 
-#if 0
+#if 1
   print_latex(copyA);
   print_latex(copyB);
   print_latex(mmaC);
@@ -595,6 +596,7 @@ gemm(char transA, char transB, int m, int n, int k,
   if (transA == 'T' && transB == 'N') {
     return gemm_tn(m, n, k, alpha, A, ldA, B, ldB, beta, C, ldC, stream);
   }
+
   assert(false && "Not implemented");
 }
 
@@ -631,11 +633,11 @@ int main(int argc, char** argv)
   if (argc >= 4)
     sscanf(argv[3], "%d", &k);
 
-  char transA = 'N';
+  char transA = 'T';
   if (argc >= 5)
     sscanf(argv[4], "%c", &transA);
 
-  char transB = 'T';
+  char transB = 'N';
   if (argc >= 6)
     sscanf(argv[5], "%c", &transB);
 
@@ -666,7 +668,7 @@ int main(int argc, char** argv)
 
   double gflops = (2.0*m*n*k) * 1e-9;
 
-  const int timing_iterations = 100;
+  const int timing_iterations = 1;
   GPU_Clock timer;
 
   int ldA = 0, ldB = 0, ldC = m;
@@ -710,6 +712,9 @@ int main(int argc, char** argv)
   }
   double cute_time = timer.seconds() / timing_iterations;
   CUTE_CHECK_LAST();
+  // for (int j = 0; j <100; ++j) std::cout << cute_result[j] << " h_c\n";
+  // std::cout << " " << gflops << " " << cute_time << std::endl;
+  // printf("%f %f", gflops, cute_time);
   printf("CUTE_GEMM:     [%6.1f]GFlop/s  (%6.4f)ms\n", gflops / cute_time, cute_time*1000);
 
   return 0;

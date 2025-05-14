@@ -264,7 +264,9 @@ gemm_nt(int m, int n, int k,
 {
   using namespace cute;
 
-  // Define shapes (dynamic)
+  // Define shapes (dynamic)  
+  // A: K * M
+  // B: K * N
   auto M = int(m);
   auto N = int(n);
   auto K = int(k);
@@ -341,9 +343,9 @@ gemm_tn(int m, int n, int k,
   auto prob_shape = make_shape(M, N, K);                     // (M, N, K)
 
   // Define TN strides (mixed)
-  auto dA = make_stride(ldA, Int<1>{});                      // (dM, dK)
-  auto dB = make_stride(ldB, Int<1>{});                      // (dN, dK)
-  auto dC = make_stride(Int<1>{}, ldC);                      // (dM, dN)
+  auto dA = make_stride(ldA, Int<1>{});   // ldA:K                    // (dM, dK)
+  auto dB = make_stride(ldB, Int<1>{});   // ldB:K                   // (dN, dK)
+  auto dC = make_stride(Int<1>{}, ldC);   // ldC:N                   // (dM, dN)
 
   // Define CTA tile sizes (static)
   auto bM = Int<128>{};
@@ -383,6 +385,7 @@ gemm_tn(int m, int n, int k,
 #endif
 
   dim3 dimBlock(size(mmaC));
+  L(mmaC);
   dim3 dimGrid(size(ceil_div(M, bM)),
                size(ceil_div(N, bN)));
   gemm_device<<<dimGrid, dimBlock, 0, stream>>>

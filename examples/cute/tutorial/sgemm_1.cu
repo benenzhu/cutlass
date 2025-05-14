@@ -40,6 +40,8 @@
 #include "cutlass/util/print_error.hpp"
 #include "cutlass/util/GPU_Clock.hpp"
 #include "cutlass/util/helper_cuda.hpp"
+#define L(a) printf(__FILE__ ":%d" "] " #a ":", __LINE__); print(a); printf("\n");
+#define L0(a) if(thread0()) { L(a); }
 
 template <class ProblemShape, class CtaTiler,
           class TA, class AStride, class ASmemLayout, class AThreadLayout,
@@ -60,13 +62,16 @@ gemm_device(ProblemShape shape_MNK, CtaTiler cta_tiler,
   // Preconditions
   CUTE_STATIC_ASSERT_V(rank(shape_MNK) == Int<3>{});                   // (M, N, K)
   CUTE_STATIC_ASSERT_V(rank(cta_tiler) == Int<3>{});                   // (BLK_M, BLK_N, BLK_K)
+                                                                
 
   static_assert(is_static<AThreadLayout>::value);
   static_assert(is_static<BThreadLayout>::value);
   static_assert(is_static<CThreadLayout>::value);
+  L0(AThreadLayout{}); //  AThreadLayout{}:(_32,_8):(_1,_32)
 
   CUTE_STATIC_ASSERT_V(size(tA) == size(tB));                          // NumThreads
   CUTE_STATIC_ASSERT_V(size(tC) == size(tA));                          // NumThreads
+  L0(size(tA)); //  size(tA):_256
 
   CUTE_STATIC_ASSERT_V(size<0>(cta_tiler) % size<0>(tA) == Int<0>{});  // BLK_M / THR_M
   CUTE_STATIC_ASSERT_V(size<2>(cta_tiler) % size<1>(tA) == Int<0>{});  // BLK_K / THR_K
@@ -86,7 +91,7 @@ gemm_device(ProblemShape shape_MNK, CtaTiler cta_tiler,
   CUTE_STATIC_ASSERT_V(size<1>(ASmemLayout{}) == size<2>(cta_tiler));  // BLK_K
   CUTE_STATIC_ASSERT_V(size<1>(BSmemLayout{}) == size<2>(cta_tiler));  // BLK_K
 
-  CUTE_STATIC_ASSERT_V(congruent(select<0,2>(shape_MNK), dA));         // dA strides for shape MK
+  CUTE_STATIC_ASSERT_V(congruent(select<0,2>(shape_MNK), dA));         // dA strides for shape MK 
   CUTE_STATIC_ASSERT_V(congruent(select<1,2>(shape_MNK), dB));         // dB strides for shape NK
   CUTE_STATIC_ASSERT_V(congruent(select<0,1>(shape_MNK), dC));         // dC strides for shape MN
 
@@ -98,10 +103,13 @@ gemm_device(ProblemShape shape_MNK, CtaTiler cta_tiler,
   Tensor mA = make_tensor(make_gmem_ptr(A), select<0,2>(shape_MNK), dA); // (M,K)
   Tensor mB = make_tensor(make_gmem_ptr(B), select<1,2>(shape_MNK), dB); // (N,K)
   Tensor mC = make_tensor(make_gmem_ptr(C), select<0,1>(shape_MNK), dC); // (M,N)
+  L0(mA) // gmem_ptr[32b](0x7fe5d8000000) o (5120,4096):(_1,5120)
 
   // Get the appropriate blocks for this thread block
   auto cta_coord = make_coord(blockIdx.x, blockIdx.y, _);              // (m,n,k)
-  Tensor gA = local_tile(mA, cta_tiler, cta_coord, Step<_1, X,_1>{});  // (BLK_M,BLK_K,k)
+  L0(cta_coord); //  cta_coord:(0,0,_)
+  Tensor gA = local_tile(mA, cta_tiler, cta_coord, Step<_1, X, _1>{}); // (BLK_M,BLK_K,k)
+  L0(gA); // gA:gmem_ptr[32b](0x7fe5d8000000) o (_128,_8,512):(_1,5120,40960)
   Tensor gB = local_tile(mB, cta_tiler, cta_coord, Step< X,_1,_1>{});  // (BLK_N,BLK_K,k)
   Tensor gC = local_tile(mC, cta_tiler, cta_coord, Step<_1,_1, X>{});  // (BLK_M,BLK_N)
 
@@ -109,6 +117,7 @@ gemm_device(ProblemShape shape_MNK, CtaTiler cta_tiler,
   __shared__ TA smemA[cosize_v<ASmemLayout>];
   __shared__ TB smemB[cosize_v<BSmemLayout>];
   Tensor sA = make_tensor(make_smem_ptr(smemA), sA_layout);            // (BLK_M,BLK_K)
+  L0(sA); //  sA:smem_ptr[32b](0x7fe607000000) o (_128,_8):(_1,_128)
   Tensor sB = make_tensor(make_smem_ptr(smemB), sB_layout);            // (BLK_N,BLK_K)
 
   //
@@ -119,6 +128,7 @@ gemm_device(ProblemShape shape_MNK, CtaTiler cta_tiler,
 
   Tensor tAgA = local_partition(gA, tA, threadIdx.x);                  // (THR_M,THR_K,k)
   Tensor tAsA = local_partition(sA, tA, threadIdx.x);                  // (THR_M,THR_K)
+  L0(tAgA); // tAgA:gmem_ptr[32b](0x7fe5d8000000) o (_4,_1,512):(_32,_0,40960)
 
   Tensor tBgB = local_partition(gB, tB, threadIdx.x);                  // (THR_N,THR_K,k)
   Tensor tBsB = local_partition(sB, tB, threadIdx.x);                  // (THR_N,THR_K)
@@ -136,6 +146,7 @@ gemm_device(ProblemShape shape_MNK, CtaTiler cta_tiler,
 
   // Partition sA (BLK_M, BLK_K) by the rows of tC
   Tensor tCsA = local_partition(sA, tC, threadIdx.x, Step<_1, X>{});   // (THR_M,BLK_K)
+  L0(tCsA); //tCsA:smem_ptr[32b](0x7fe607000000) o (_8,_8):(_16,_128)
   // Partition sB (BLK_N, BLK_K) by the cols of tC
   Tensor tCsB = local_partition(sB, tC, threadIdx.x, Step< X,_1>{});   // (THR_N,BLK_K)
   // Partition gC (M,N) by the tile of tC
@@ -192,12 +203,15 @@ gemm_device(ProblemShape shape_MNK, CtaTiler cta_tiler,
   //   gemm(.) operates on the shared and register memory via the tC partitioning
 
   auto K_TILE_MAX = size<2>(tAgA);
+  L0(K_TILE_MAX); // K_TILE_MAX:512
 
   for (int k_tile = 0; k_tile < K_TILE_MAX; ++k_tile)
   {
     // Copy gmem to smem with tA|tB thread-partitioned tensors
     copy(tAgA(_,_,k_tile), tAsA);      // A   (THR_M,THR_K) -> (THR_M,THR_K)
+    // L0(tAgA(_,_, k_tile));
     copy(tBgB(_,_,k_tile), tBsB);      // B   (THR_N,THR_K) -> (THR_N,THR_K)
+    // L0(tBgB(_,_, k_tile));
 
     // TUTORIAL: The above call to copy(tAgA(_,_,k_tile), tAsA) is equivalent to
     //   Tensor tAgAk = tAgA(_,_,k_tile);
@@ -211,7 +225,7 @@ gemm_device(ProblemShape shape_MNK, CtaTiler cta_tiler,
     __syncthreads();         // Wait for all threads to write to smem
 
     // Compute gemm on tC thread-partitioned smem
-    gemm(tCsA, tCsB, tCrC);            // (THR_M,THR_N) += (THR_M,BLK_K) * (THR_N,BLK_K)
+    gemm(tCsA, tCsB, tCrC);            // (THR_M,THR_N) += (THR_M,BLK_K) * (THR_N,BLK_K) 
 
     // TUTORIAL: The above call to gemm(tCsA, tCsB, tCrC) is equivalent to
     //   CUTE_UNROLL
@@ -256,38 +270,55 @@ gemm_nt(int m, int n, int k,
         TC      * C, int ldC,
         cudaStream_t stream = 0)
 {
-  using namespace cute;
+  using namespace cute; // normal trans
 
   // Define shapes (dynamic)
   auto M = int(m);
   auto N = int(n);
   auto K = int(k);
   auto prob_shape = make_shape(M, N, K);                     // (M, N, K)
+  puts(""); puts(""); puts(""); puts(""); puts(""); puts(""); puts(""); puts(""); puts(""); puts(""); 
+  L(M); // 512
+  L(N); // 1024
+  L(K); // 2048
+  L(ldA); // 512
+  L(ldB); // 1024
+  L(ldC); // 512
+  L(prob_shape); 
 
-  // Define NT strides (mixed)
+  // Define NT strides (mixed)  A: 512 * 1024
   auto dA = make_stride(Int<1>{}, ldA);                      // (dM, dK)
+                                                          
   auto dB = make_stride(Int<1>{}, ldB);                      // (dN, dK)
   auto dC = make_stride(Int<1>{}, ldC);                      // (dM, dN)
+  L(dA);
+  L(dB);
+  L(dC);
 
   // Define CTA tile sizes (static)
   auto bM = Int<128>{};
   auto bN = Int<128>{};
   auto bK = Int<  8>{};
   auto cta_tiler = make_shape(bM, bN, bK);                   // (BLK_M, BLK_N, BLK_K)
+  L(cta_tiler);
 
   // Define the smem layouts (static)
   auto sA = make_layout(make_shape(bM, bK));                 // (m,k) -> smem_idx; m-major
   auto sB = make_layout(make_shape(bN, bK));                 // (n,k) -> smem_idx; n-major
   auto sC = make_layout(make_shape(bM, bN));                 // (m,n) -> smem_idx; m-major
+  L(sA); // sA:(_128,_8):(_1,_128)
 
   // Define the thread layouts (static)
   auto tA = make_layout(make_shape(Int<32>{}, Int< 8>{}));   // (m,k) -> thr_idx
   auto tB = make_layout(make_shape(Int<32>{}, Int< 8>{}));   // (n,k) -> thr_idx
   auto tC = make_layout(make_shape(Int<16>{}, Int<16>{}));   // (m,n) -> thr_idx
+  L(tA); // tA:(_32,_8):(_1,_32)
 
   dim3 dimBlock(size(tC));
+  L(dimBlock); // dimBlock:(256,1,1)
   dim3 dimGrid(size(ceil_div(M, bM)),
                size(ceil_div(N, bN)));
+  L(dimGrid); // dimGrid:(40,40,1)
   gemm_device<<<dimGrid, dimBlock, 0, stream>>>
       (prob_shape, cta_tiler,
        A, dA, sA, tA,
@@ -352,7 +383,7 @@ gemm_tn(int m, int n, int k,
 template <class TA, class TB, class TC,
           class Alpha, class Beta>
 void
-gemm(char transA, char transB, int m, int n, int k,
+gemm(const char transA, const char transB, int m, int n, int k,
      Alpha alpha,
      TA const* A, int ldA,
      TB const* B, int ldB,
@@ -362,8 +393,7 @@ gemm(char transA, char transB, int m, int n, int k,
 {
   if (transA == 'N' && transB == 'T') {
     return gemm_nt(m, n, k, alpha, A, ldA, B, ldB, beta, C, ldC, stream);
-  } else
-  if (transA == 'T' && transB == 'N') {
+  } else if (transA == 'T' && transB == 'N') {
     return gemm_tn(m, n, k, alpha, A, ldA, B, ldB, beta, C, ldC, stream);
   }
   assert(false && "Not implemented");
@@ -372,15 +402,15 @@ gemm(char transA, char transB, int m, int n, int k,
 
 int main(int argc, char** argv)
 {
-  int m = 5120;
+  int m = 512;
   if (argc >= 2)
     sscanf(argv[1], "%d", &m);
 
-  int n = 5120;
+  int n = 256;
   if (argc >= 3)
     sscanf(argv[2], "%d", &n);
 
-  int k = 4096;
+  int k = 128;
   if (argc >= 4)
     sscanf(argv[3], "%d", &k);
 
@@ -411,8 +441,8 @@ int main(int argc, char** argv)
   thrust::host_vector<TB> h_B(n*k);
   thrust::host_vector<TC> h_C(m*n);
 
-  for (int j = 0; j < m*k; ++j) h_A[j] = static_cast<TA>( 2*(rand() / double(RAND_MAX)) - 1 );
-  for (int j = 0; j < n*k; ++j) h_B[j] = static_cast<TB>( 2*(rand() / double(RAND_MAX)) - 1 );
+  for (int j = 0; j < m*k; ++j) h_A[j] = j; // static_cast<TA>( 2*(rand() / double(RAND_MAX)) - 1 );
+  for (int j = 0; j < n*k; ++j) h_B[j] = j; // static_cast<TB>( 2*(rand() / double(RAND_MAX)) - 1 );
   for (int j = 0; j < m*n; ++j) h_C[j] = static_cast<TC>(-1);
 
   thrust::device_vector<TA> d_A = h_A;
@@ -421,22 +451,22 @@ int main(int argc, char** argv)
 
   double gflops = (2.0*m*n*k) * 1e-9;
 
-  const int timing_iterations = 100;
+  const int timing_iterations = 0;
   GPU_Clock timer;
 
   int ldA = 0, ldB = 0, ldC = m;
 
-  if (transA == 'N') {
+  if (transA == 'N') {  // A: k * m;
     ldA = m;
-  } else if (transA == 'T') {
+  } else if (transA == 'T') {  // A: m * k;
     ldA = k;
   } else {
     assert(false);
   }
 
-  if (transB == 'N') {
+  if (transB == 'N') { // B: n * k;
     ldB = k;
-  } else if (transB == 'T') {
+  } else if (transB == 'T') { // B: k * n;
     ldB = n;
   } else {
     assert(false);
@@ -454,16 +484,28 @@ int main(int argc, char** argv)
 
   // Timing iterations
   timer.start();
-  for (int i = 0; i < timing_iterations; ++i) {
-    gemm(transA, transB, m, n, k,
-         alpha,
-         d_A.data().get(), ldA,
-         d_B.data().get(), ldB,
-         beta,
-         d_C.data().get(), ldC);
-  }
-  double cute_time = timer.seconds() / timing_iterations;
+  // for (int i = 0; i < timing_iterations; ++i) {
+  //   gemm(transA, transB, m, n, k,
+  //        alpha,
+  //        d_A.data().get(), ldA,
+  //        d_B.data().get(), ldB,
+  //        beta,
+  //        d_C.data().get(), ldC);
+  // }
+  // double cute_time = timer.seconds() / timing_iterations;
   CUTE_CHECK_LAST();
-  printf("CUTE_GEMM:     [%6.1f]GFlop/s  (%6.4f)ms\n", gflops / cute_time, cute_time*1000);
+  for(int i = 0; i < m; i++){
+    for(int j = 0; j < n; j++){
+      h_C[i * n + j] = 0;
+      for(int x = 0; x < k; x++){ // A: M * K, B: N * K;
+        // h_C[i * n + j] += h_A[i * n + x] * h_B[j * n + x];
+        h_C[i * n + j] += h_A[x * m + i] * h_B[x * n + i];
+      }
+    }
+  }
+  for(int i = 0; i < 10; i++) {
+    std::cout << cute_result[i] << " " << h_C[i] << std::endl;
+  }
+  // printf("CUTE_GEMM:     [%6.1f]GFlop/s  (%6.4f)ms\n", gflops / cute_time, cute_time*1000);
   return 0;
 }
