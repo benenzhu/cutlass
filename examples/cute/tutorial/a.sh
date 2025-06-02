@@ -1,0 +1,5 @@
+# rm -rf a.out
+make -j 1>/dev/null
+./a.out  |tail -n 40
+
+# g++ -I/A/code/cutlass/include -I/A/code/cutlass/examples/common -I/A/code/cutlass/build/include -I/A/code/cutlass/tools/util/include -isystem=/usr/local/cuda/include -isystem=/usr/local/cuda/include/cccl -DCUTLASS_VERSIONS_GENERATED    -DCUTLASS_ENABLE_TENSOR_CORE_MMA=1 -DCUTLASS_ENABLE_GDC_FOR_SM100=1  -ftemplate-backtrace-limit=0 -DCUTLASS_TEST_LEVEL=0 -DCUTLASS_TEST_ENABLE_CACHED_RESULTS=1 -DCUTLASS_CONV_UNIT_TEST_RIGOROUS_SIZE_ENABLED=1 -DCUTLASS_DEBUG_TRACE_LEVEL=0 -Wconversion -fno-strict-aliasing -I/usr/local/cuda-12.8/targets/x86_64-linux/include/ -I/usr/local/cuda-12.3/targets/x86_64-linux/include/ -L/usr/local/cuda-12.8/targets/x86_64-linux/lib/ -std=c++17 -lcuda -lcudart zty_learn_cute.cc

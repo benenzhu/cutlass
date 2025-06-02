@@ -89,7 +89,7 @@ void my_gemm(float *A, float *B, float *C) {
 int main() {
   using namespace cute;
 
-  cute::device_init(0);
+  // cute::device_init(0);
 
   thrust::host_vector<float> h_A(M * K);
   thrust::host_vector<float> h_B(K * N);
@@ -111,7 +111,7 @@ int main() {
   auto dA = make_stride(Int<1>{}, 1000);
   L(prob_shape);
   L(dA);
-  CUTE_STATIC_ASSERT_V(congruent(select<0, 2>(prob_shape), dA));
+  // CUTE_STATIC_ASSERT_V(congruent(select<0, 2>(prob_shape), dA));
   // auto dA = make_stride(Int<1>{}, M);
   // auto dA = make_stride(Int<1>{}, M);
   L(prob_shape);
