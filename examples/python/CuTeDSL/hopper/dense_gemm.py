@@ -26,10 +26,12 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+#%%
 import argparse
 from typing import Tuple, Type
 import math
 import cuda.bindings.driver as cuda
+#%%
 
 import torch
 
@@ -82,7 +84,7 @@ To collect performance with NCU profiler:
 
 .. code-block:: bash
 
-    ncu python examples/hopper/dense_gemm.py                               \
+    ncu python dense_gemm.py                               \
       --mnkl 8192,8192,8192,1 --tile_shape_mnk 128,256,64                  \
       --cluster_shape_mn 1,1 --a_dtype Float16 --b_dtype Float16           \
       --c_dtype Float16 --acc_dtype Float32                                \

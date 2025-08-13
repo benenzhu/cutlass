@@ -1,3 +1,4 @@
+#%%
 # Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
 
@@ -81,14 +82,14 @@ If you already know the TV layout you want to use for your tiled copy, CuTe DSL 
 `cute.make_layout_tv` to build the tiled copy type around it and the atom of your choice.
 
 .. code-block:: python
+thr_layout = cute.make_layout((4, 32), stride=(32, 1))
+val_layout = cute.make_layout((4, 4), stride=(4, 1))
+tiler_mn, tv_layout = cute.make_layout_tv(thr_layout, val_layout)
 
-    thr_layout = cute.make_layout((4, 32), stride=(32, 1))
-    val_layout = cute.make_layout((4, 4), stride=(4, 1))
-    tiler_mn, tv_layout = cute.make_layout_tv(thr_layout, val_layout)
 
-    # Tile input tensor to thread blocks: ((TileM,TileN),(RestM,RestN))
-    gA = cute.zipped_divide(mA, tiler_mn)
-
+thr_layout , val_layout, tiler_mn, tv_layout
+# Tile input tensor to thread blocks: ((TileM,TileN),(RestM,RestN))
+gA = cute.zipped_divide(mA, tiler_mn)
 where `tiler_mn` is the tile size per thread block and `tv_layout` is the TV layout which maps
 thread index and inter-thread index of data array per thread to logical coordinates of elements in
 input and output tensors.
@@ -97,31 +98,31 @@ Then we can build tiled copy for input and output tensors with `cute.make_tiled_
 
 .. code-block:: python
 
-    blkA = gA[((None, None), bidx)]  # (TileM,TileN)
+blkA = gA[((None, None), bidx)]  # (TileM,TileN)
 
-    copy_atom_load = cute.make_copy_atom(cute.nvgpu.CopyUniversalOp(), gA.element_type)
-    tiled_copy_A = cute.make_tiled_copy(copy_atom_load, tv_layout, tiler_mn)
+copy_atom_load = cute.make_copy_atom(cute.nvgpu.CopyUniversalOp(), gA.element_type)
+tiled_copy_A = cute.make_tiled_copy(copy_atom_load, tv_layout, tiler_mn)
 
-    # get slice of tiled_copy_A for current thread
-    thr_copy_A = tiled_copy_A.get_slice(tidx)
+# get slice of tiled_copy_A for current thread
+thr_copy_A = tiled_copy_A.get_slice(tidx)
 
-    # partition per thread block tensor as source of tiled copy
-    thrA = thr_copy_A.partition_S(blkA)
+# partition per thread block tensor as source of tiled copy
+thrA = thr_copy_A.partition_S(blkA)
 
-    # allocate fragment for gmem->rmem
-    frgA = cute.make_fragment_like(thrA)
+# allocate fragment for gmem->rmem
+frgA = cute.make_fragment_like(thrA)
 
-    # copy data from global memory to register memory
-    cute.copy(copy_atom_load, thrA, frgA)
+# copy data from global memory to register memory
+cute.copy(copy_atom_load, thrA, frgA)
 
 
 To run this example:
 
 .. code-block:: bash
 
-    python examples/ampere/elementwise_add.py --M 3 --N 12
-    python examples/ampere/elementwise_add.py --M 1024 --N 512
-    python examples/ampere/elementwise_add.py --M 1024 --N 1024 --benchmark --warmup_iterations 2 --iterations 1000
+    python examples/python/CuTeDSL/ampere/elementwise_add.py --M 3 --N 12
+    python examples/python/CuTeDSL/ampere/elementwise_add.py --M 1024 --N 512
+    python examples/python/CuTeDSL/ampere/elementwise_add.py --M 1024 --N 1024 --benchmark --warmup_iterations 2 --iterations 1000
 
 To collect performance with NCU profiler:
 
@@ -259,12 +260,12 @@ def elementwise_add(mA, mB, mC, copy_bits: cutlass.Constexpr = 128):
 
 
 def run_elementwise_add(
-    M,
-    N,
-    dtype: Type[cutlass.Numeric],
-    is_a_dynamic_layout=False,
-    is_b_dynamic_layout=False,
-    is_result_dynamic_layout=False,
+    M=8192,
+    N=8192,
+    dtype:Type[cutlass.Numeric]=cutlass.Float32,
+    is_a_dynamic_layout=True,
+    is_b_dynamic_layout=True,
+    is_result_dynamic_layout=True,
     skip_ref_check=False,
     benchmark=True,
     warmup_iterations=2,
@@ -369,24 +370,30 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="example of elementwise add to demonstrate the numpy/pytorch as input for kernels"
     )
+    import sys
+# Remove Jupyter kernel arguments from sys.argv
+    sys.argv = [arg for arg in sys.argv if not arg.startswith('--f=')]
     parser.add_argument("--M", default=1024, type=int)
     parser.add_argument("--N", default=1024, type=int)
     parser.add_argument("--warmup_iterations", default=2, type=int)
     parser.add_argument("--iterations", default=100, type=int)
     parser.add_argument("--skip_ref_check", action="store_true")
     parser.add_argument("--benchmark", action="store_true")
-
+    from dowhen import when
+    when (parser.parse_args, 1909).do("print(argv)")
     args = parser.parse_args()
     run_elementwise_add(
         args.M,
         args.N,
         dtype=cutlass.Float32,
-        is_a_dynamic_layout=True,
-        is_b_dynamic_layout=True,
-        is_result_dynamic_layout=True,
-        skip_ref_check=args.skip_ref_check,
-        benchmark=args.benchmark,
+        is_a_dynamic_layout=False,
+        is_b_dynamic_layout=False,
+        is_result_dynamic_layout=False,
+        skip_ref_check=False,
+        benchmark=True,
         warmup_iterations=args.warmup_iterations,
         iterations=args.iterations,
     )
     print("\nPASS")
+
+# %%

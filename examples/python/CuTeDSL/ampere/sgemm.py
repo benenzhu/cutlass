@@ -35,6 +35,8 @@ import torch
 
 import cutlass
 import cutlass.cute as cute
+import cutlass.cute.testing as testing
+import cutlass.torch as cutlass_torch
 import cutlass.utils as utils
 from cutlass.cute.runtime import from_dlpack
 
@@ -109,10 +111,18 @@ class SGemm:
         mB: cute.Tensor,
         mC: cute.Tensor,
         epilogue_op: cutlass.Constexpr = lambda x: x,
+        stream: cuda.CUstream = cuda.CUstream(cuda.CUstream_flags.CU_STREAM_DEFAULT),
     ):
         self.a_major_mode = utils.LayoutEnum.from_tensor(mA)
         self.b_major_mode = utils.LayoutEnum.from_tensor(mB)
         self.c_major_mode = utils.LayoutEnum.from_tensor(mC)
+        
+        cute.printf("zty:: \t A = {}", mA)
+        cute.printf("zty:: \t B = {}", mB)
+        cute.printf("zty:: \t C = {}", mC)
+        print("zty:: \t a_major_mode = ", self.a_major_mode)
+        print("zty:: \t b_major_mode = ", self.b_major_mode)
+        print("zty:: \t c_major_mode = ", self.c_major_mode)
 
         # ///////////////////////////////////////////////////////////////////////////////
         # Create layouts for shared memory for A and B:
@@ -128,14 +138,17 @@ class SGemm:
             (self._bM, self._bK, self._num_stages),
             stride=(1, (self._bM + padding_a), self._bK * (self._bM + padding_a)),
         )
+        cute.printf("zty:: \t sA_layout = {}", sA_layout)
         sB_layout = cute.make_layout(
             (self._bN, self._bK, self._num_stages),
             stride=(1, (self._bN + padding_b), self._bK * (self._bN + padding_b)),
         )
 
+        cute.printf("zty:: \t sB_layout = {}", sB_layout)
         smem_size = cute.size_in_bytes(mA.element_type, sA_layout) + cute.size_in_bytes(
             mB.element_type, sB_layout
         )
+        cute.printf("zty:: \t smem_size = {}", smem_size)
 
         # ///////////////////////////////////////////////////////////////////////////////
         # Create copy layouts that will be used for asynchronous
@@ -152,9 +165,11 @@ class SGemm:
         tA = cute.make_layout(
             (self._num_threads // self._bK, self._bK), stride=(self._bK, 1)
         )
+        cute.printf("zty:: \t tA = {}", tA)
         tB = cute.make_layout(
             (self._num_threads // self._bK, self._bK), stride=(self._bK, 1)
         )
+        cute.printf("zty:: \t tB = {}", tB)
         vA = cute.make_layout((1, 1))
         vB = cute.make_layout((1, 1))
         atom_async_copy_A = cute.make_copy_atom(
@@ -168,7 +183,7 @@ class SGemm:
             num_bits_per_copy=mB.element_type.width,
         )
 
-        if self.a_major_mode == utils.LayoutEnum.COL_MAJOR:
+        if cutlass.const_expr(self.a_major_mode == utils.LayoutEnum.COL_MAJOR):
             num_vectorized = 4 if (mA.layout.max_alignment % 16 == 0) else 1
             atom_async_copy_A = cute.make_copy_atom(
                 cute.nvgpu.cpasync.CopyG2SOp(),
@@ -181,8 +196,9 @@ class SGemm:
                 stride=(1, major_mode_size),
             )
             vA = cute.make_layout((num_vectorized, 1))
+            print("zty:: \t num_vectorized for A = ", num_vectorized)
 
-        if self.b_major_mode == utils.LayoutEnum.COL_MAJOR:
+        if cutlass.const_expr(self.b_major_mode == utils.LayoutEnum.COL_MAJOR):
             num_vectorized = 4 if (mB.layout.max_alignment % 16 == 0) else 1
             atom_async_copy_B = cute.make_copy_atom(
                 cute.nvgpu.cpasync.CopyG2SOp(),
@@ -195,9 +211,15 @@ class SGemm:
                 stride=(1, major_mode_size),
             )
             vB = cute.make_layout((num_vectorized, 1))
+            print("zty:: \t num_vectorized for B = ", num_vectorized)
+        print("zty:: \t atom_async_copy_A = ", atom_async_copy_A)
+        print("zty:: \t atom_async_copy_B = ", atom_async_copy_B)
 
         tiled_copy_A = cute.make_tiled_copy_tv(atom_async_copy_A, tA, vA)
         tiled_copy_B = cute.make_tiled_copy_tv(atom_async_copy_B, tB, vB)
+        print("zty:: \t tiled_copy_A = ", tiled_copy_A)
+        print("zty:: \t tiled_copy_B = ", tiled_copy_B)
+
 
         # ///////////////////////////////////////////////////////////////////////////////
         # Create layouts for GEMM:
@@ -222,7 +244,7 @@ class SGemm:
         atoms_layout = cute.make_layout(
             (self._num_threads // 16, 16, 1), stride=(16, 1, 0)
         )
-        if self.c_major_mode == utils.LayoutEnum.COL_MAJOR:
+        if cutlass.const_expr(self.c_major_mode == utils.LayoutEnum.COL_MAJOR):
             atoms_layout = cute.make_layout(
                 (16, self._num_threads // 16, 1), stride=(1, 16, 0)
             )
@@ -241,6 +263,8 @@ class SGemm:
 
         # grid_dim: ((m + BLK_M - 1) // BLK_M, (n + BLK_N - 1) // BLK_N, 1)
         grid_dim = *cute.ceil_div(mC.shape, (self._bM, self._bN)), 1
+        # print("zty:: \t grid_dim = ", grid_dim)
+        cute.printf("zty:: \t grid_dim = {}", grid_dim)
 
         self.kernel(
             mA,
@@ -256,6 +280,7 @@ class SGemm:
             grid=grid_dim,
             block=[cute.size(atoms_layout), 1, 1],
             smem=smem_size,
+            stream=stream,
         )
 
     @cute.kernel
@@ -276,6 +301,8 @@ class SGemm:
         bidx, bidy, bidz = cute.arch.block_idx()
         tiler_coord = (bidx, bidy, None)
         thr_mma = tiled_mma.get_slice(tidx)
+        if tidx == 0:
+            cute.printf("zty:: \t mA = {}", mA)
 
         # ///////////////////////////////////////////////////////////////////////////////
         # Get the appropriate tiles for this thread block.
@@ -284,6 +311,8 @@ class SGemm:
         gA = cute.local_tile(
             mA, tiler=self._cta_tiler, coord=tiler_coord, proj=(1, None, 1)
         )
+        if tidx == 0:
+            cute.printf("zty:: \t gA = {} tiler: {} coord: {} from {}", gA, self._cta_tiler, tiler_coord, mA.shape)
         gB = cute.local_tile(
             mB, tiler=self._cta_tiler, coord=tiler_coord, proj=(None, 1, 1)
         )
@@ -296,6 +325,9 @@ class SGemm:
         # We first handle the irregular tile to avoid checking for this
         # condition within the mainloop.
         residue_k = mA.shape[1] - cutlass.Int32(self._bK) * gA.shape[2]
+        if tidx == 0:
+            cute.printf("zty:: \t residue_k = {}", residue_k)
+            cute.printf("zty:: \t residue_k = {} {}",self._bK, gA.shape)
         gA = cute.domain_offset((0, residue_k, 0), gA)
         gB = cute.domain_offset((0, residue_k, 0), gB)
 
@@ -397,28 +429,28 @@ class SGemm:
             cutlass.Boolean,
         )
         # Set predicates for m/n bounds for mainloop
-        for rest_v in range(tApA.shape[0]):
-            for m in range(tApA.shape[1]):
+        for rest_v in cute.range_constexpr(tApA.shape[0]):
+            for m in cute.range_constexpr(tApA.shape[1]):
                 tApA[rest_v, m, 0] = cute.elem_less(
                     tAcA[(0, rest_v), m, 0, 0][0], mA.shape[0]
                 )
-        for rest_v in range(tBpB.shape[0]):
-            for n in range(tBpB.shape[1]):
+        for rest_v in cute.range_constexpr(tBpB.shape[0]):
+            for n in cute.range_constexpr(tBpB.shape[1]):
                 tBpB[rest_v, n, 0] = cute.elem_less(
                     tBcB[(0, rest_v), n, 0, 0][0], mB.shape[0]
                 )
 
         # Set predicates for m/n/k bounds for residue k tile
-        for rest_v in range(tApA_residue_k.shape[0]):
-            for m in range(tApA_residue_k.shape[1]):
-                for k in range(tApA_residue_k.shape[2]):
+        for rest_v in cute.range_constexpr(tApA_residue_k.shape[0]):
+            for m in cute.range_constexpr(tApA_residue_k.shape[1]):
+                for k in cute.range_constexpr(tApA_residue_k.shape[2]):
                     coord_A = tAcA[(0, rest_v), m, k, 0]
                     tApA_residue_k[rest_v, m, k] = cute.elem_less(
                         (coord_A[0], cutlass.Int32(-1)), (mA.shape[0], coord_A[1])
                     )
-        for rest_v in range(tBpB_residue_k.shape[0]):
-            for n in range(tBpB_residue_k.shape[1]):
-                for k in range(tBpB_residue_k.shape[2]):
+        for rest_v in cute.range_constexpr(tBpB_residue_k.shape[0]):
+            for n in cute.range_constexpr(tBpB_residue_k.shape[1]):
+                for k in cute.range_constexpr(tBpB_residue_k.shape[2]):
                     coord_B = tBcB[(0, rest_v), n, k, 0]
                     tBpB_residue_k[rest_v, n, k] = cute.elem_less(
                         (coord_B[0], cutlass.Int32(-1)), (mB.shape[0], coord_B[1])
@@ -450,7 +482,7 @@ class SGemm:
             else cutlass.Int32(0)
         )
         # Start async loads for 1st k-tile onwards, no k-residue handling needed
-        for k_tile in range(1, k_pipe_max - 1):
+        for k_tile in cute.range_constexpr(1, k_pipe_max - 1):
             if k_tile < k_tile_count:
                 cute.copy(
                     tiled_copy_A,
@@ -475,11 +507,11 @@ class SGemm:
         # all tiles have been copied from global memory, so clear the
         # predicate tensor
         if k_tile_count < k_pipe_max:
-            for rest_v in range(tApA.shape[0]):
-                for m in range(tApA.shape[1]):
+            for rest_v in cute.range_constexpr(tApA.shape[0]):
+                for m in cute.range_constexpr(tApA.shape[1]):
                     tApA[rest_v, m, 0] = cutlass.Boolean(0)
-            for rest_v in range(tBpB.shape[0]):
-                for n in range(tBpB.shape[1]):
+            for rest_v in cute.range_constexpr(tBpB.shape[0]):
+                for n in cute.range_constexpr(tBpB.shape[1]):
                     tBpB[rest_v, n, 0] = cutlass.Boolean(0)
 
         # ///////////////////////////////////////////////////////////////////////////////
@@ -540,8 +572,8 @@ class SGemm:
         # 3. Combining the smem and register pipelines results in the mainloop.
         # ///////////////////////////////////////////////////////////////////////////////
 
-        for _ in cutlass.range_dynamic(k_tile_count, unroll=1):
-            for k_block in range(k_block_max):
+        for _ in range(k_tile_count):
+            for k_block in range(k_block_max, unroll_full=True):
                 if k_block == k_block_max - 1:
                     tCsA_p = tCsA[None, None, None, smem_pipe_read]
                     tCsB_p = tCsB[None, None, None, smem_pipe_read]
@@ -621,7 +653,7 @@ class SGemm:
         predC = cute.make_fragment(tCrC.layout, cutlass.Boolean)
         residue_m = mC.shape[0] - cutlass.Int32(self._bM) * bidx
         residue_n = mC.shape[1] - cutlass.Int32(self._bN) * bidy
-        for i in range(cute.size(tCrC.shape)):
+        for i in cutlass.range(cute.size(tCrC.shape)):
             predC[i] = cute.elem_less(tCpC[i], (residue_m, residue_n))
         numIterM = cute.size(tCrC, mode=[1])
         numIterN = cute.size(tCrC, mode=[2])
@@ -630,17 +662,50 @@ class SGemm:
         return
 
 
-def main(
+def run(
+    mnk: Tuple[int, int, int],
     a_major: str,
     b_major: str,
     c_major: str,
-    problem_shape: Tuple[int, int, int],
+    static_shape: bool = False,
     warmup_iterations: int = 2,
     iterations: int = 100,
     skip_ref_check: bool = False,
+    use_cold_l2: bool = False,
+    **kwargs,
 ):
-    torch.manual_seed(1024)
-    M, N, K = problem_shape
+    """Execute SIMT GEMM operation and benchmark performance.
+
+    :param mnk: GEMM problem size (M, N, K, L)
+    :type mnk: Tuple[int, int, int, int]
+    :param a_major: Memory layout of tensor A
+    :type a_major: str
+    :param b_major: Memory layout of tensor B
+    :type b_major: str
+    :param c_major: Memory layout of tensor C
+    :type c_major: str
+    :param static_shape: Whether to use static shape optimization, defaults to False
+    :type static_shape: bool, optional
+    :param warmup_iterations: Number of warmup iterations before benchmarking, defaults to 2
+    :type warmup_iterations: int, optional
+    :param iterations: Number of benchmark iterations to run, defaults to 100
+    :type iterations: int, optional
+    :param skip_ref_check: Skip validation against reference implementation, defaults to False
+    :type skip_ref_check: bool, optional
+    :param use_cold_l2: Whether to use circular buffer strategy to ensure cold L2 cache, defaults to False
+    :type use_cold_l2: bool, optional
+    :return: Execution time of the GEMM kernel in microseconds
+    :rtype: float
+    """
+    # print(f"Running Ampere SIMT GEMM example:")
+    print(f"mnk: {mnk}")
+    print(f"A major: {a_major}, B major: {b_major}, C major: {c_major}")
+    print(f"Static shape: {static_shape}")
+    print(f"Warmup iterations: {warmup_iterations}")
+    print(f"Iterations: {iterations}")
+    # print(f"Skip reference checking: {skip_ref_check}")
+    # print(f"Use cold L2: {use_cold_l2}")
+    M, N, K = mnk
 
     # Create and permute tensor A/B/C
     def create_and_permute_tensor(mode0, mode1, is_mode0_major, dtype):
@@ -673,6 +738,7 @@ def main(
             divisibility=divisibility_a,
         )
     )
+    print("A_tensor", a_tensor)
 
     b_tensor = (
         from_dlpack(b, assumed_align=16)
@@ -694,55 +760,92 @@ def main(
 
     sgemm = SGemm()
 
-    print("Compiling kernel with cute.compile ...")
-    start_time = time.time()
-    gemm = cute.compile(sgemm, a_tensor, b_tensor, c_tensor)
-    compilation_time = time.time() - start_time
-    print(f"Compilation time: {compilation_time:.4f} seconds")
-
-    print("Executing GEMM kernel...")
-
     # Get current CUDA stream from PyTorch
     torch_stream = torch.cuda.current_stream()
-
     # Get the raw stream pointer as a CUstream
     current_stream = cuda.CUstream(torch_stream.cuda_stream)
 
-    # Create CUDA events for timing
-    start_event = cuda.cuEventCreate(cuda.CUevent_flags.CU_EVENT_DEFAULT)[1]
-    end_event = cuda.cuEventCreate(cuda.CUevent_flags.CU_EVENT_DEFAULT)[1]
+    print("Compiling kernel with cute.compile ...")
+    start_time = time.time()
+    gemm = cute.compile(sgemm, a_tensor, b_tensor, c_tensor, stream=current_stream)
+    compilation_time = time.time() - start_time
+    print(f"Compilation time: {compilation_time:.4f} seconds")
 
-    # Warmup
-    for _ in range(warmup_iterations):
-        gemm(a_tensor, b_tensor, c_tensor)
-
-    # Use the current stream for CUDA events instead of the default stream
-    # Record start event
-    cuda.cuEventRecord(start_event, current_stream)
-
-    # Execute the kernel
-    for _ in range(iterations):
-        gemm(a_tensor, b_tensor, c_tensor)
-
-    # Record end event
-    cuda.cuEventRecord(end_event, current_stream)
-    cuda.cuEventSynchronize(end_event)
-
-    # Calculate elapsed time
-    err, elapsed_time = cuda.cuEventElapsedTime(start_event, end_event)
-
-    # Print execution results
-    print(f"Kernel execution time: {elapsed_time / iterations:.4f} ms")
-
-    # Destroy events
-    cuda.cuEventDestroy(start_event)
-    cuda.cuEventDestroy(end_event)
+    # print("Executing GEMM kernel...")
 
     if not skip_ref_check:
-        print("Verifying results...")
+        gemm(a_tensor, b_tensor, c_tensor)
+        torch.cuda.synchronize()
+        # print("Verifying results...")
         ref = torch.einsum("mk,nk->mn", a, b)
         torch.testing.assert_close(c.cpu(), ref.cpu(), atol=1e-03, rtol=1e-05)
-        print("Results verified successfully!")
+        # print("Results verified successfully!")
+
+    return
+    def generate_tensors():
+        # Create new tensors for each workspace to ensure cold L2 cache
+        a_workspace = create_and_permute_tensor(M, K, a_major == "m", torch.float32)
+        b_workspace = create_and_permute_tensor(N, K, b_major == "n", torch.float32)
+        c_workspace = create_and_permute_tensor(M, N, c_major == "m", torch.float32)
+
+        if static_shape:
+            a_tensor_workspace = (
+                from_dlpack(a_workspace, assumed_align=16)
+                .mark_layout_dynamic(leading_dim=(1 if a_major == "k" else 0))
+                .mark_compact_shape_dynamic(
+                    mode=(1 if a_major == "k" else 0),
+                    divisibility=divisibility_a,
+                )
+            )
+        else:
+            a_tensor_workspace = from_dlpack(a_workspace, assumed_align=16)
+
+        b_tensor_workspace = (
+            from_dlpack(b_workspace, assumed_align=16)
+            .mark_layout_dynamic(leading_dim=(1 if b_major == "k" else 0))
+            .mark_compact_shape_dynamic(
+                mode=(1 if b_major == "k" else 0),
+                divisibility=divisibility_b,
+            )
+        )
+
+        c_tensor_workspace = (
+            from_dlpack(c_workspace, assumed_align=16)
+            .mark_layout_dynamic(leading_dim=(1 if c_major == "n" else 0))
+            .mark_compact_shape_dynamic(
+                mode=(1 if c_major == "n" else 0),
+                divisibility=divisibility_c,
+            )
+        )
+
+        return testing.JitArguments(
+            a_tensor_workspace, b_tensor_workspace, c_tensor_workspace, current_stream
+        )
+
+    workspace_count = 1
+    if use_cold_l2:
+        one_workspace_bytes = (
+            a.numel() * a.element_size()
+            + b.numel() * b.element_size()
+            + c.numel() * c.element_size()
+        )
+        workspace_count = testing.get_workspace_count(
+            one_workspace_bytes, warmup_iterations, iterations
+        )
+
+    avg_time_us = testing.benchmark(
+        gemm,
+        workspace_generator=generate_tensors,
+        workspace_count=workspace_count,
+        stream=current_stream,
+        warmup_iterations=warmup_iterations,
+        iterations=iterations,
+    )
+
+    # Print execution results
+    print(f"Kernel execution time: {avg_time_us / 1e3:.4f} ms")
+
+    return avg_time_us  # Return execution time in microseconds
 
 
 if __name__ == "__main__":
@@ -757,24 +860,36 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--mnk", type=parse_comma_separated_ints, default=(256, 256, 64)
+        "--mnk", type=parse_comma_separated_ints, default=(256, 256, 256)
     )
-    parser.add_argument("--a_major", choices=["k", "m"], default="k")
+    parser.add_argument("--a_major", choices=["k", "m"], default="m")
     parser.add_argument("--b_major", choices=["k", "n"], default="k")
     parser.add_argument("--c_major", choices=["n", "m"], default="n")
     parser.add_argument("--warmup_iterations", default=2, type=int)
     parser.add_argument("--iterations", default=100, type=int)
-    parser.add_argument("--skip_ref_check", action="store_true")
+    parser.add_argument("--skip_ref_check", action="store_true", default=False)
+    parser.add_argument(
+        "--use_cold_l2",
+        action="store_true",
+        default=False,
+        help="Use circular buffer tensor sets to ensure L2 cold cache",
+    )
 
     args = parser.parse_args()
-    print("Running SIMT GEMM example:")
-    main(
+    
+    # print("Running SIMT GEMM example:")
+
+    torch.manual_seed(1024)
+
+    run(
+        args.mnk,
         args.a_major,
         args.b_major,
         args.c_major,
-        args.mnk,
+        True,
         args.warmup_iterations,
         args.iterations,
         args.skip_ref_check,
-    )
-    print("PASS")
+        args.use_cold_l2,
+   )
+    # print("PASS")
