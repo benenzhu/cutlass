@@ -43,7 +43,6 @@
 // * 05_mma_tma_epi_sm100.cu: Blackwell SM100 GEMM with 2SM tcgen05.mma, 2SM TMA mainloop, and TMA epilogue.
 //
 ///////////////////////////////////////////////////////////////////////////////////////////////////
-1/0
 #include <iostream>
 #include <cstdio>
 
