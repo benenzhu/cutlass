@@ -1,4 +1,3 @@
-#%%
 # Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
 
@@ -29,16 +28,17 @@
 
 
 import argparse
-import torch
 import time
 from typing import Type
 
 import cuda.bindings.driver as cuda
+import torch
 
 import cutlass
 import cutlass.cute as cute
-from cutlass.cute.runtime import from_dlpack
+import cutlass.cute.testing as testing
 import cutlass.torch as cutlass_torch
+from cutlass.cute.runtime import from_dlpack
 
 """
 An Elementwise Addition Example using CuTe DSL.
@@ -140,8 +140,8 @@ def elementwise_add_kernel(
     gC: cute.Tensor,
     cC: cute.Tensor,  # coordinate tensor
     shape: cute.Shape,
-    tv_layout: cute.Layout,
-    tiler_mn: cute.Shape,
+    thr_layout: cute.Layout,
+    val_layout: cute.Layout,
 ):
     tidx, _, _ = cute.arch.thread_idx()
     bidx, _, _ = cute.arch.block_idx()
@@ -152,6 +152,10 @@ def elementwise_add_kernel(
     blkA = gA[blk_coord]  # (TileM,TileN)
     blkB = gB[blk_coord]  # (TileM,TileN)
     blkC = gC[blk_coord]  # (TileM,TileN)
+    if tidx == 0 and bidx == 0:
+        cute.printf("zty:: blkA: {}", blkA)
+        cute.printf("zty:: blkB: {}", blkB)
+        cute.printf("zty:: blkC: {}", blkC)
     blkCrd = cC[blk_coord]  # (TileM, TileN)
 
     print(f"[DSL INFO] Sliced Tensors per thread block:")
@@ -164,9 +168,9 @@ def elementwise_add_kernel(
     copy_atom_load = cute.make_copy_atom(cute.nvgpu.CopyUniversalOp(), gA.element_type)
     copy_atom_store = cute.make_copy_atom(cute.nvgpu.CopyUniversalOp(), gC.element_type)
 
-    tiled_copy_A = cute.make_tiled_copy(copy_atom_load, tv_layout, tiler_mn)
-    tiled_copy_B = cute.make_tiled_copy(copy_atom_load, tv_layout, tiler_mn)
-    tiled_copy_C = cute.make_tiled_copy(copy_atom_store, tv_layout, tiler_mn)
+    tiled_copy_A = cute.make_tiled_copy_tv(copy_atom_load, thr_layout, val_layout)
+    tiled_copy_B = cute.make_tiled_copy_tv(copy_atom_load, thr_layout, val_layout)
+    tiled_copy_C = cute.make_tiled_copy_tv(copy_atom_store, thr_layout, val_layout)
 
     thr_copy_A = tiled_copy_A.get_slice(tidx)
     thr_copy_B = tiled_copy_B.get_slice(tidx)
@@ -190,7 +194,7 @@ def elementwise_add_kernel(
     print(f"[DSL INFO]   thrC = {thrC.type}")
     print(f"[DSL INFO]   thrCrd = {thrCrd.type}")
 
-    for i in cutlass.range_dynamic(0, cute.size(frgPred), 1):
+    for i in range(0, cute.size(frgPred), 1, unroll_full=True):
         val = cute.elem_less(thrCrd[i], shape)
         frgPred[i] = val
 
@@ -224,14 +228,32 @@ def elementwise_add_kernel(
     cute.copy(copy_atom_store, frgC, thrC, pred=frgPred)
 
 
+
+@cute.jit
+def print_layout_2d(L: cute.Tensor):
+    m, n = L.shape
+    m = cute.size(L, [0])
+    n = cute.size(L, [1])
+    cute.printf("Layout: {}", L)
+    for i in cute.range_constexpr(m):
+        for j in cute.range_constexpr(n):
+            cute.printf("%3d ", L((i, j)), end="")
+        cute.printf("")
+    cute.printf("")
 @cute.jit
 def elementwise_add(mA, mB, mC, copy_bits: cutlass.Constexpr = 128):
+    cute.printf("zty:: mA: {}", mA) # (1024,1024):(1024,1)
+    cute.printf("zty:: mB: {}", mB) # (1024,1024):(1024,1) 
+    cute.printf("zty:: mC: {}", mC) # (1024,1024):(1024,1)
     dtype = mA.element_type
     vector_size = copy_bits // dtype.width
 
-    thr_layout = cute.make_ordered_layout((4, 32), order=(1, 0))
-    val_layout = cute.make_ordered_layout((4, vector_size), order=(1, 0))
+    thr_layout = cute.make_ordered_layout((4, 32), order=(1, 0)) # (4,32):(32,1)
+    val_layout = cute.make_ordered_layout((4, vector_size), order=(1, 0)) # (4,4):(4,1)
     tiler_mn, tv_layout = cute.make_layout_tv(thr_layout, val_layout)
+    cute.printf("zty:: tiler_mn: {}", tiler_mn) # (16,128)
+    cute.printf("zty:: tv_layout: {}", tv_layout) # ((32,4),(4,4)):((64,4),(16,1))
+    # print_layout_2d(tv_layout)
 
     print(f"[DSL INFO] Input Tensors:")
     print(f"[DSL INFO]   mA = {mA.type}")
@@ -244,6 +266,10 @@ def elementwise_add(mA, mB, mC, copy_bits: cutlass.Constexpr = 128):
     gA = cute.zipped_divide(mA, tiler_mn)  # ((TileM,TileN),(RestM,RestN))
     gB = cute.zipped_divide(mB, tiler_mn)  # ((TileM,TileN),(RestM,RestN))
     gC = cute.zipped_divide(mC, tiler_mn)  # ((TileM,TileN),(RestM,RestN))
+    cute.printf("zty:: \tgA: {}", gA)
+    cute.printf("zty:: \tgB: {}", gB)
+    cute.printf("zty:: \tgC: {}", gC)
+
     print(f"[DSL INFO] Tiled Tensors:")
     print(f"[DSL INFO]   gA = {gA.type}")
     print(f"[DSL INFO]   gB = {gB.type}")
@@ -252,10 +278,14 @@ def elementwise_add(mA, mB, mC, copy_bits: cutlass.Constexpr = 128):
     idC = cute.make_identity_tensor(mC.shape)
     cC = cute.zipped_divide(idC, tiler=tiler_mn)
     print(f"[DSL INFO]   coord tensor = {cC.type}")
-
-    elementwise_add_kernel(gA, gB, gC, cC, mC.shape, tv_layout, tiler_mn).launch(
-        grid=[cute.size(gC, mode=[1]), 1, 1],
-        block=[cute.size(tv_layout, mode=[0]), 1, 1],
+    grid=[cute.size(gC, mode=[1]), 1, 1]
+    block=[cute.size(tv_layout, mode=[0]), 1, 1]
+    
+    cute.printf("zty:: grid: {}", grid[0], 1, 1)
+    cute.printf("zty:: block: {}", block[0])
+    elementwise_add_kernel(gA, gB, gC, cC, mC.shape, thr_layout, val_layout).launch(
+        grid = grid,
+        block = block
     )
 
 
@@ -294,17 +324,17 @@ def run_elementwise_add(
     print(f"c: {c.shape}, dtype: {c.dtype}\n")
 
     if not is_a_dynamic_layout:
-        a_tensor = from_dlpack(a).mark_layout_dynamic()
+        a_tensor = from_dlpack(a, assumed_align=128).mark_layout_dynamic()
     else:
         a_tensor = a
 
     if not is_b_dynamic_layout:
-        b_tensor = from_dlpack(b).mark_layout_dynamic()
+        b_tensor = from_dlpack(b, assumed_align=128).mark_layout_dynamic()
     else:
         b_tensor = b
 
     if not is_result_dynamic_layout:
-        c_tensor = from_dlpack(c).mark_layout_dynamic()
+        c_tensor = from_dlpack(c, assumed_align=128).mark_layout_dynamic()
     else:
         c_tensor = c
 
@@ -316,10 +346,8 @@ def run_elementwise_add(
 
     print("Executing vector add kernel...")
 
-    # Get current CUDA stream from PyTorch
-    torch_stream = torch.cuda.current_stream()
-    # Get the raw stream pointer as a CUstream
-    current_stream = cuda.CUstream(torch_stream.cuda_stream)
+    # Get current CUstream from torch
+    current_stream = cutlass_torch.current_stream()
 
     if not skip_ref_check:
         compiled_func(a_tensor, b_tensor, c_tensor)
@@ -379,9 +407,9 @@ if __name__ == "__main__":
     parser.add_argument("--iterations", default=100, type=int)
     parser.add_argument("--skip_ref_check", action="store_true")
     parser.add_argument("--benchmark", action="store_true")
-    from dowhen import when
-    when (parser.parse_args, 1909).do("print(argv)")
+
     args = parser.parse_args()
+
     run_elementwise_add(
         args.M,
         args.N,
@@ -389,11 +417,9 @@ if __name__ == "__main__":
         is_a_dynamic_layout=False,
         is_b_dynamic_layout=False,
         is_result_dynamic_layout=False,
-        skip_ref_check=False,
-        benchmark=True,
+        skip_ref_check=args.skip_ref_check,
+        benchmark=args.benchmark,
         warmup_iterations=args.warmup_iterations,
         iterations=args.iterations,
     )
     print("\nPASS")
-
-# %%
