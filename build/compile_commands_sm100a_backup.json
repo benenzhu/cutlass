@@ -1,0 +1,38 @@
+[
+  {
+    "arguments": [
+      "/usr/local/cuda/bin/nvcc",
+      "-I/A/cutlass/include",
+      "-I/A/cutlass/examples/common",
+      "-I/A/cutlass/build/include",
+      "-I/A/cutlass/tools/util/include",
+      "-isystem",
+      "/usr/local/cuda/include",
+      "-DCUTLASS_VERSIONS_GENERATED",
+      "-O3",
+      "-DNDEBUG",
+      "-std=c++17",
+      "-Xcompiler=-fPIE",
+      "-DCUTLASS_ENABLE_TENSOR_CORE_MMA=1",
+      "-DCUTLASS_ENABLE_GDC_FOR_SM100=1",
+      "-DCUTLASS_ARCH_MMA_SM100_SUPPORTED",
+      "--expt-relaxed-constexpr",
+      "-ftemplate-backtrace-limit=0",
+      "-DCUTLASS_TEST_LEVEL=0",
+      "-DCUTLASS_TEST_ENABLE_CACHED_RESULTS=1",
+      "-DCUTLASS_CONV_UNIT_TEST_RIGOROUS_SIZE_ENABLED=1",
+      "-DCUTLASS_DEBUG_TRACE_LEVEL=0",
+      "-Xcompiler=-Wconversion",
+      "-Xcompiler=-fno-strict-aliasing",
+      "-x",
+      "cu",
+      "-c",
+      "-o",
+      "CMakeFiles/cute_tutorial_01_mma_sm100.dir/01_mma_sm100.cu.o",
+      "/A/cutlass/examples/cute/tutorial/blackwell/01_mma_sm100.cu"
+    ],
+    "directory": "/A/cutlass/build/examples/cute/tutorial/blackwell",
+    "file": "/A/cutlass/examples/cute/tutorial/blackwell/01_mma_sm100.cu",
+    "output": "/A/cutlass/build/examples/cute/tutorial/blackwell/CMakeFiles/cute_tutorial_01_mma_sm100.dir/01_mma_sm100.cu.o"
+  }
+]
